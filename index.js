@@ -1,16 +1,18 @@
 const express = require('express');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 
 const serverHost = process.env.SERVER_HOST || 'Jorooo.aternos.me';
 const serverPort = parseInt(process.env.SERVER_PORT || '56651', 10);
-const botUsername = process.env.BOT_USERNAME || 'MeiBot';
-const minecraftVersion = process.env.MC_VERSION || '1.21.11';
+const botUsername = process.env.BOT_USERNAME || 'Mizuhara';
+const minecraftVersion = process.env.MC_VERSION || false;
 const reconnectInterval = parseInt(process.env.RECONNECT_INTERVAL_MS || '40000', 10);
 const antiAfkInterval = parseInt(process.env.ANTI_AFK_INTERVAL_MS || '20000', 10);
 const httpPort = parseInt(process.env.PORT || '5000', 10);
+const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL || null;
 
 const app = express();
 const server = http.createServer(app);
@@ -30,6 +32,44 @@ app.get('/health', (req, res) => {
     target: `${serverHost}:${serverPort}`,
   });
 });
+
+// Discord webhook helper
+function sendDiscord(content, color, title) {
+  if (!discordWebhookUrl) return;
+  try {
+    const url = new URL(discordWebhookUrl);
+    const body = JSON.stringify({
+      embeds: [{
+        title: title || 'Mizuhara Bot',
+        description: content,
+        color: color || 0x5865F2,
+        timestamp: new Date().toISOString(),
+        footer: { text: `${serverHost}:${serverPort}` }
+      }]
+    });
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    };
+    const req = https.request(options);
+    req.on('error', (err) => console.error('Discord webhook error:', err.message));
+    req.write(body);
+    req.end();
+  } catch (err) {
+    console.error('Discord webhook send failed:', err.message);
+  }
+}
+
+const DISCORD_GREEN  = 0x57F287;
+const DISCORD_RED    = 0xED4245;
+const DISCORD_YELLOW = 0xFEE75C;
+const DISCORD_BLUE   = 0x5865F2;
+const DISCORD_GREY   = 0x95A5A6;
 
 let bot = null;
 let antiAfkTimer = null;
@@ -86,6 +126,7 @@ function createBot() {
 
   console.log(`Connecting bot "${botUsername}" to ${serverHost}:${serverPort} ...`);
   io.emit('bot_status', `Connecting to ${serverHost}:${serverPort}...`);
+  sendDiscord(`🔄 Connecting to **${serverHost}:${serverPort}**...`, DISCORD_BLUE, '🤖 Mizuhara');
 
   let newBot;
   try {
@@ -100,6 +141,7 @@ function createBot() {
   } catch (err) {
     console.error('Failed to create bot:', err.message);
     io.emit('bot_status', `Failed to create bot: ${err.message}`);
+    sendDiscord(`❌ Failed to create bot: **${err.message}**`, DISCORD_RED, '❌ Connection Failed');
     scheduleReconnect();
     return;
   }
@@ -109,11 +151,13 @@ function createBot() {
   bot.once('login', () => {
     console.log(`Bot "${bot.username}" logged in to ${serverHost}.`);
     io.emit('bot_status', `Bot ${bot.username} logged in.`);
+    sendDiscord(`✅ **${bot.username}** logged in to \`${serverHost}\``, DISCORD_GREEN, '✅ Bot Online');
   });
 
   bot.once('spawn', () => {
     console.log(`Bot "${bot.username}" spawned in the world.`);
     io.emit('bot_status', `Bot ${bot.username} spawned. Anti-AFK active.`);
+    sendDiscord(`🌍 **${bot.username}** spawned in the world. Anti-AFK is active.`, DISCORD_GREEN, '🌍 Bot Spawned');
     startAntiAfk();
   });
 
@@ -126,6 +170,7 @@ function createBot() {
   bot.on('death', () => {
     console.log('Bot died. Respawning.');
     io.emit('bot_status', 'Bot died, respawning.');
+    sendDiscord(`💀 **${botUsername}** died and is respawning.`, DISCORD_YELLOW, '💀 Bot Died');
   });
 
   bot.on('kicked', (reason) => {
@@ -133,16 +178,17 @@ function createBot() {
     try {
       const parsed = typeof reason === 'string' ? JSON.parse(reason) : reason;
       message = (parsed && (parsed.text || parsed.translate)) || JSON.stringify(parsed);
-    } catch (_) {
-      // Reason was not JSON; use as-is.
-    }
+    } catch (_) {}
     console.log(`Bot kicked: ${message}`);
     io.emit('bot_status', `Kicked: ${message}`);
+    sendDiscord(`🚫 **${botUsername}** was kicked.\nReason: \`${message}\``, DISCORD_RED, '🚫 Bot Kicked');
   });
 
   bot.on('error', (err) => {
-    console.error('Bot error:', err && err.message ? err.message : err);
-    io.emit('bot_status', `Error: ${err && err.message ? err.message : err}`);
+    const msg = err && err.message ? err.message : String(err);
+    console.error('Bot error:', msg);
+    io.emit('bot_status', `Error: ${msg}`);
+    sendDiscord(`⚠️ Bot error: \`${msg}\``, DISCORD_YELLOW, '⚠️ Bot Error');
   });
 
   bot.on('end', (reason) => {
@@ -150,9 +196,11 @@ function createBot() {
     cleanupBot();
     if (manualStop) {
       io.emit('bot_status', 'Bot stopped.');
+      sendDiscord(`🛑 **${botUsername}** was stopped manually.`, DISCORD_GREY, '🛑 Bot Stopped');
       return;
     }
     io.emit('bot_status', `Disconnected (${reason || 'unknown'}). Reconnecting in ${reconnectInterval / 1000}s.`);
+    sendDiscord(`🔌 **${botUsername}** disconnected (\`${reason || 'unknown'}\`). Reconnecting in **${reconnectInterval / 1000}s**...`, DISCORD_YELLOW, '🔌 Bot Disconnected');
     scheduleReconnect();
   });
 }
@@ -187,10 +235,7 @@ function startAntiAfk() {
     } catch (err) {}
   }, 200);
 
-  // Store head timer so it gets cleared on stop
-  antiAfkTimer = headTimer;
-
-  // Movement AI — runs every 800ms, steps forward then immediately back to stay in place
+  // Movement AI — runs every 800ms, steps then reverses to stay in place
   const moveTimer = setInterval(() => {
     if (!bot || !bot.entity) return;
     try {
@@ -230,7 +275,6 @@ function startAntiAfk() {
     }
   }, 800);
 
-  // Patch stopAntiAfk to clear both timers
   antiAfkTimer = { headTimer, moveTimer };
 }
 
@@ -273,6 +317,7 @@ function stopBot(message) {
 function reconnectBot() {
   console.log('Manual reconnect requested.');
   io.emit('bot_status', 'Reconnecting bot...');
+  sendDiscord(`🔄 Manual reconnect triggered for **${botUsername}**.`, DISCORD_BLUE, '🔄 Reconnecting');
   if (bot) {
     try {
       bot.quit('Reconnecting');
