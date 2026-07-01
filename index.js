@@ -123,6 +123,9 @@ io.on('connection', (socket) => {
 
 server.listen(httpPort, () => {
   console.log(`HTTP server listening on port ${httpPort}.`);
+  console.log(`Bot username  : ${botUsername}`);
+  console.log(`Target server : ${serverHost}:${serverPort}`);
+  console.log(`Discord hook  : ${discordWebhookUrl ? '✓ configured' : '✗ NOT SET — add DISCORD_WEBHOOK_URL env var'}`);
 });
 
 function createBot() {
