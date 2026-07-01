@@ -7,7 +7,7 @@ const mineflayer = require('mineflayer');
 
 const serverHost = process.env.SERVER_HOST || 'Jorooo.aternos.me';
 const serverPort = parseInt(process.env.SERVER_PORT || '56651', 10);
-const botUsername = process.env.BOT_USERNAME || 'Mizuhara';
+const botUsername = process.env.BOT_USERNAME || 'CrimsonAlpha';
 const minecraftVersion = process.env.MC_VERSION || false;
 const reconnectInterval = parseInt(process.env.RECONNECT_INTERVAL_MS || '40000', 10);
 const antiAfkInterval = parseInt(process.env.ANTI_AFK_INTERVAL_MS || '20000', 10);
