@@ -4,13 +4,13 @@ const http = require('http');
 const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
 
-const serverHost = process.env.SERVER_HOST || 'DOOMS_DAY_REBORN.aternos.me';
-const serverPort = parseInt(process.env.SERVER_PORT || '59173', 10);
-const botUsername = process.env.BOT_USERNAME || '247_Monitor';
-const minecraftVersion = process.env.MC_VERSION || false;
+const serverHost = process.env.SERVER_HOST || 'Jorooo.aternos.me';
+const serverPort = parseInt(process.env.SERVER_PORT || '56651', 10);
+const botUsername = process.env.BOT_USERNAME || 'MeiBot';
+const minecraftVersion = process.env.MC_VERSION || '1.21.11';
 const reconnectInterval = parseInt(process.env.RECONNECT_INTERVAL_MS || '40000', 10);
 const antiAfkInterval = parseInt(process.env.ANTI_AFK_INTERVAL_MS || '20000', 10);
-const httpPort = parseInt(process.env.PORT || '3000', 10);
+const httpPort = parseInt(process.env.PORT || '5000', 10);
 
 const app = express();
 const server = http.createServer(app);
@@ -74,7 +74,6 @@ io.on('connection', (socket) => {
 
 server.listen(httpPort, () => {
   console.log(`HTTP server listening on port ${httpPort}.`);
-  createBot();
 });
 
 function createBot() {
@@ -161,39 +160,88 @@ function createBot() {
 function startAntiAfk() {
   stopAntiAfk();
 
-  antiAfkTimer = setInterval(() => {
+  let yaw = 0;
+  let pitch = 0;
+  let yawTarget = 0;
+  let pitchTarget = 0;
+  let moveTick = 0;
+  let lastMoveDir = null;
+  const opposite = { forward: 'back', back: 'forward', left: 'right', right: 'left' };
+
+  // Head rotation — runs every 200ms for smooth, constant scanning
+  const headTimer = setInterval(() => {
     if (!bot || !bot.entity) return;
-
     try {
-      const moves = ['forward', 'back', 'left', 'right'];
-      const move = moves[Math.floor(Math.random() * moves.length)];
+      // Every 10 ticks (~2s) pick a new target to look at
+      if (moveTick % 10 === 0) {
+        yawTarget = yaw + (Math.random() - 0.5) * Math.PI * 1.5;
+        pitchTarget = (Math.random() - 0.5) * 0.9;
+      }
+      moveTick++;
 
-      bot.setControlState(move, true);
-      setTimeout(() => {
-        if (bot) bot.setControlState(move, false);
-      }, 600);
+      // Smoothly interpolate toward target (looks like real player scanning)
+      yaw += (yawTarget - yaw) * 0.18;
+      pitch += (pitchTarget - pitch) * 0.18;
+      pitch = Math.max(-0.8, Math.min(0.8, pitch));
+      bot.look(yaw, pitch, false).catch(() => {});
+    } catch (err) {}
+  }, 200);
 
-      if (Math.random() < 0.4) {
-        bot.setControlState('jump', true);
-        setTimeout(() => {
-          if (bot) bot.setControlState('jump', false);
-        }, 250);
+  // Store head timer so it gets cleared on stop
+  antiAfkTimer = headTimer;
+
+  // Movement AI — runs every 800ms, steps forward then immediately back to stay in place
+  const moveTimer = setInterval(() => {
+    if (!bot || !bot.entity) return;
+    try {
+      // Always cancel last move first (return to origin)
+      if (lastMoveDir) {
+        const rev = opposite[lastMoveDir];
+        bot.setControlState(rev, true);
+        setTimeout(() => { if (bot) bot.setControlState(rev, false); }, 350);
+        lastMoveDir = null;
+        return;
       }
 
-      const yaw = (Math.random() - 0.5) * Math.PI * 2;
-      const pitch = (Math.random() - 0.5) * (Math.PI / 3);
-      bot.look(yaw, pitch, true).catch(() => {});
+      // Pick a new direction and step into it
+      const dirs = ['forward', 'back', 'left', 'right'];
+      const dir = dirs[Math.floor(Math.random() * dirs.length)];
+      bot.setControlState(dir, true);
+      setTimeout(() => { if (bot) bot.setControlState(dir, false); }, 350);
+      lastMoveDir = dir;
 
-      bot.swingArm('right');
+      // Arm swing on movement
+      bot.swingArm(Math.random() < 0.5 ? 'right' : 'left');
+
+      // Occasional jump mid-step
+      if (Math.random() < 0.2) {
+        bot.setControlState('jump', true);
+        setTimeout(() => { if (bot) bot.setControlState('jump', false); }, 150);
+      }
+
+      // Occasional sneak
+      if (Math.random() < 0.15) {
+        bot.setControlState('sneak', true);
+        setTimeout(() => { if (bot) bot.setControlState('sneak', false); }, 500);
+      }
+
     } catch (err) {
-      console.error('Anti-AFK error:', err.message);
+      console.error('Anti-AFK move error:', err.message);
     }
-  }, antiAfkInterval);
+  }, 800);
+
+  // Patch stopAntiAfk to clear both timers
+  antiAfkTimer = { headTimer, moveTimer };
 }
 
 function stopAntiAfk() {
   if (antiAfkTimer) {
-    clearInterval(antiAfkTimer);
+    if (typeof antiAfkTimer === 'object' && antiAfkTimer.headTimer) {
+      clearInterval(antiAfkTimer.headTimer);
+      clearInterval(antiAfkTimer.moveTimer);
+    } else {
+      clearInterval(antiAfkTimer);
+    }
     antiAfkTimer = null;
   }
 }
