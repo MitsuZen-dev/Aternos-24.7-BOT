@@ -112,10 +112,6 @@
         socket.emit('control_bot', 'reconnect');
       }
 
-      // Auto-start bot once on first page load
-      window.addEventListener('load', () => {
-        socket.emit('control_bot', 'start');
-      });
     </script>
   </body>
 </html>
