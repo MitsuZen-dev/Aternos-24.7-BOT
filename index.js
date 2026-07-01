@@ -74,16 +74,21 @@ const DISCORD_GREY   = 0x95A5A6;
 let bot = null;
 let antiAfkTimer = null;
 let reconnectTimer = null;
+let heartbeatTimer = null;
 let manualStop = false;
+let botOnlineTime = null;
 
 io.on('connection', (socket) => {
   console.log('Web client connected.');
 
   if (bot && bot.player) {
+    socket.emit('bot_state', 'online');
     socket.emit('bot_status', `Bot ${bot.username} is online.`);
   } else if (bot) {
+    socket.emit('bot_state', 'connecting');
     socket.emit('bot_status', 'Bot is connecting...');
   } else {
+    socket.emit('bot_state', 'offline');
     socket.emit('bot_status', 'Bot is offline.');
   }
 
@@ -125,6 +130,7 @@ function createBot() {
   }
 
   console.log(`Connecting bot "${botUsername}" to ${serverHost}:${serverPort} ...`);
+  io.emit('bot_state', 'connecting');
   io.emit('bot_status', `Connecting to ${serverHost}:${serverPort}...`);
   sendDiscord(`🔄 Connecting to **${serverHost}:${serverPort}**...`, DISCORD_BLUE, '🤖 Mizuhara');
 
@@ -150,15 +156,19 @@ function createBot() {
 
   bot.once('login', () => {
     console.log(`Bot "${bot.username}" logged in to ${serverHost}.`);
+    io.emit('bot_state', 'connecting');
     io.emit('bot_status', `Bot ${bot.username} logged in.`);
     sendDiscord(`✅ **${bot.username}** logged in to \`${serverHost}\``, DISCORD_GREEN, '✅ Bot Online');
   });
 
   bot.once('spawn', () => {
     console.log(`Bot "${bot.username}" spawned in the world.`);
-    io.emit('bot_status', `Bot ${bot.username} spawned. Anti-AFK active.`);
-    sendDiscord(`🌍 **${bot.username}** spawned in the world. Anti-AFK is active.`, DISCORD_GREEN, '🌍 Bot Spawned');
+    botOnlineTime = Date.now();
+    io.emit('bot_state', 'online');
+    io.emit('bot_status', `Bot ${bot.username} is in the server.`);
+    sendDiscord(`🌍 **${bot.username}** spawned and is now **in the server**. Anti-AFK active.`, DISCORD_GREEN, '🟢 Bot In Server');
     startAntiAfk();
+    startHeartbeat();
   });
 
   bot.on('health', () => {
@@ -180,6 +190,7 @@ function createBot() {
       message = (parsed && (parsed.text || parsed.translate)) || JSON.stringify(parsed);
     } catch (_) {}
     console.log(`Bot kicked: ${message}`);
+    io.emit('bot_state', 'offline');
     io.emit('bot_status', `Kicked: ${message}`);
     sendDiscord(`🚫 **${botUsername}** was kicked.\nReason: \`${message}\``, DISCORD_RED, '🚫 Bot Kicked');
   });
@@ -193,12 +204,15 @@ function createBot() {
 
   bot.on('end', (reason) => {
     console.log(`Bot disconnected. Reason: ${reason || 'unknown'}.`);
+    stopHeartbeat();
     cleanupBot();
     if (manualStop) {
+      io.emit('bot_state', 'offline');
       io.emit('bot_status', 'Bot stopped.');
       sendDiscord(`🛑 **${botUsername}** was stopped manually.`, DISCORD_GREY, '🛑 Bot Stopped');
       return;
     }
+    io.emit('bot_state', 'offline');
     io.emit('bot_status', `Disconnected (${reason || 'unknown'}). Reconnecting in ${reconnectInterval / 1000}s.`);
     sendDiscord(`🔌 **${botUsername}** disconnected (\`${reason || 'unknown'}\`). Reconnecting in **${reconnectInterval / 1000}s**...`, DISCORD_YELLOW, '🔌 Bot Disconnected');
     scheduleReconnect();
@@ -278,6 +292,22 @@ function startAntiAfk() {
   antiAfkTimer = { headTimer, moveTimer };
 }
 
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (!bot || !bot.entity) return;
+    const uptime = botOnlineTime ? Math.floor((Date.now() - botOnlineTime) / 60000) : 0;
+    sendDiscord(`💚 **${botUsername}** is still **in the server**.\nUptime: **${uptime} min**`, DISCORD_GREEN, '💚 Status: Online');
+  }, 10 * 60 * 1000); // every 10 minutes
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
 function stopAntiAfk() {
   if (antiAfkTimer) {
     if (typeof antiAfkTimer === 'object' && antiAfkTimer.headTimer) {
@@ -292,6 +322,8 @@ function stopAntiAfk() {
 
 function cleanupBot() {
   stopAntiAfk();
+  stopHeartbeat();
+  botOnlineTime = null;
   if (bot) {
     bot.removeAllListeners();
   }
