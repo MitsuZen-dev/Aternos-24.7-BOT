@@ -4,10 +4,11 @@ const http = require('http');
 const https = require('https');
 const { Server } = require('socket.io');
 const mineflayer = require('mineflayer');
+const mc = require('minecraft-protocol');
 
 const serverHost = process.env.SERVER_HOST || 'Jorooo.aternos.me';
 const serverPort = parseInt(process.env.SERVER_PORT || '56651', 10);
-const botUsername = process.env.BOT_USERNAME || 'CrimsonAlpha';
+const botUsername = process.env.BOT_USERNAME || 'Mizuhara';
 const minecraftVersion = process.env.MC_VERSION || false;
 const reconnectInterval = parseInt(process.env.RECONNECT_INTERVAL_MS || '40000', 10);
 const antiAfkInterval = parseInt(process.env.ANTI_AFK_INTERVAL_MS || '20000', 10);
@@ -121,8 +122,9 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(httpPort, () => {
+server.listen(httpPort, '0.0.0.0', () => {
   console.log(`HTTP server listening on port ${httpPort}.`);
+  startSelfPing();
 });
 
 function createBot() {
@@ -133,99 +135,124 @@ function createBot() {
     return;
   }
 
-  console.log(`Connecting bot "${botUsername}" to ${serverHost}:${serverPort} ...`);
+  // Ping server first — only attempt join if it's actually accepting connections
   io.emit('bot_state', 'connecting');
-  io.emit('bot_status', `Connecting to ${serverHost}:${serverPort}...`);
-  sendDiscord(`🔄 Connecting to **${serverHost}:${serverPort}**...`, DISCORD_BLUE, '🤖 Mizuhara');
+  io.emit('bot_status', `Pinging ${serverHost}:${serverPort}...`);
+  console.log(`Pinging ${serverHost}:${serverPort} before connecting...`);
 
-  let newBot;
-  try {
-    newBot = mineflayer.createBot({
-      host: serverHost,
-      port: serverPort,
-      username: botUsername,
-      version: minecraftVersion,
-      auth: 'offline',
-      hideErrors: false,
-    });
-  } catch (err) {
-    console.error('Failed to create bot:', err.message);
-    io.emit('bot_status', `Failed to create bot: ${err.message}`);
-    sendDiscord(`❌ Failed to create bot: **${err.message}**`, DISCORD_RED, '❌ Connection Failed');
-    scheduleReconnect();
-    return;
-  }
-
-  bot = newBot;
-
-  bot.once('login', () => {
-    console.log(`Bot "${bot.username}" logged in to ${serverHost}.`);
-    io.emit('bot_state', 'connecting');
-    io.emit('bot_status', `Bot ${bot.username} logged in.`);
-    sendDiscord(`✅ **${bot.username}** logged in to \`${serverHost}\``, DISCORD_GREEN, '✅ Bot Online');
-  });
-
-  bot.once('spawn', () => {
-    console.log(`Bot "${bot.username}" spawned in the world.`);
-    botOnlineTime = Date.now();
-    io.emit('bot_state', 'online');
-    io.emit('bot_status', `Bot ${bot.username} is in the server.`);
-    sendDiscord(`🌍 **${bot.username}** spawned and is now **in the server**. Anti-AFK active.`, DISCORD_GREEN, '🟢 Bot In Server');
-    startAntiAfk();
-    startHeartbeat();
-  });
-
-  bot.on('health', () => {
-    if (bot && bot.health <= 0) {
-      console.log('Bot has died, will respawn automatically.');
-    }
-  });
-
-  bot.on('death', () => {
-    console.log('Bot died. Respawning.');
-    io.emit('bot_status', 'Bot died, respawning.');
-    sendDiscord(`💀 **${botUsername}** died and is respawning.`, DISCORD_YELLOW, '💀 Bot Died');
-  });
-
-  bot.on('kicked', (reason) => {
-    let message = reason;
-    try {
-      const parsed = typeof reason === 'string' ? JSON.parse(reason) : reason;
-      message = (parsed && (parsed.text || parsed.translate)) || JSON.stringify(parsed);
-    } catch (_) {}
-    console.log(`Bot kicked: ${message}`);
-    io.emit('bot_state', 'offline');
-    io.emit('bot_status', `Kicked: ${message}`);
-    sendDiscord(`🚫 **${botUsername}** was kicked.\nReason: \`${message}\``, DISCORD_RED, '🚫 Bot Kicked');
-  });
-
-  bot.on('error', (err) => {
-    const msg = err && err.message ? err.message : String(err);
-    console.error('Bot error:', msg);
-    io.emit('bot_status', `Error: ${msg}`);
-    // ECONNRESET = Aternos server went to sleep; suppress Discord spam
-    const silent = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'];
-    const isSilent = silent.some((code) => msg.includes(code));
-    if (!isSilent) {
-      sendDiscord(`⚠️ Bot error: \`${msg}\``, DISCORD_YELLOW, '⚠️ Bot Error');
-    }
-  });
-
-  bot.on('end', (reason) => {
-    console.log(`Bot disconnected. Reason: ${reason || 'unknown'}.`);
-    stopHeartbeat();
-    cleanupBot();
-    if (manualStop) {
+  mc.ping({ host: serverHost, port: serverPort, closeTimeout: 8000 }, (err, result) => {
+    if (err) {
+      console.log(`Server ping failed (${err.message}) — will retry in ${reconnectInterval / 1000}s.`);
       io.emit('bot_state', 'offline');
-      io.emit('bot_status', 'Bot stopped.');
-      sendDiscord(`🛑 **${botUsername}** was stopped manually.`, DISCORD_GREY, '🛑 Bot Stopped');
+      io.emit('bot_status', `Server not ready. Retrying in ${reconnectInterval / 1000}s...`);
+      scheduleReconnect();
       return;
     }
-    io.emit('bot_state', 'offline');
-    io.emit('bot_status', `Disconnected (${reason || 'unknown'}). Reconnecting in ${reconnectInterval / 1000}s.`);
-    sendDiscord(`🔌 **${botUsername}** disconnected (\`${reason || 'unknown'}\`). Reconnecting in **${reconnectInterval / 1000}s**...`, DISCORD_YELLOW, '🔌 Bot Disconnected');
-    scheduleReconnect();
-  });
+
+    const detectedVersion = result && result.version && result.version.name ? result.version.name : 'unknown';
+    console.log(`Server is up (${detectedVersion}). Connecting bot "${botUsername}"...`);
+    io.emit('bot_status', `Server online (${detectedVersion}). Connecting...`);
+    sendDiscord(`🔄 Connecting to **${serverHost}:${serverPort}** — Server version: \`${detectedVersion}\``, DISCORD_BLUE, '🤖 Mizuhara');
+
+    let newBot;
+    try {
+      newBot = mineflayer.createBot({
+        host: serverHost,
+        port: serverPort,
+        username: botUsername,
+        version: minecraftVersion,
+        auth: 'offline',
+        hideErrors: false,
+      });
+    } catch (err) {
+      console.error('Failed to create bot:', err.message);
+      io.emit('bot_status', `Failed to create bot: ${err.message}`);
+      sendDiscord(`❌ Failed to create bot: **${err.message}**`, DISCORD_RED, '❌ Connection Failed');
+      scheduleReconnect();
+      return;
+    }
+
+    bot = newBot;
+
+    bot.once('login', () => {
+      console.log(`Bot "${bot.username}" logged in to ${serverHost}.`);
+      io.emit('bot_state', 'connecting');
+      io.emit('bot_status', `Bot ${bot.username} logged in.`);
+      sendDiscord(`✅ **${bot.username}** logged in to \`${serverHost}\``, DISCORD_GREEN, '✅ Bot Online');
+    });
+
+    bot.once('spawn', () => {
+      console.log(`Bot "${bot.username}" spawned in the world.`);
+      botOnlineTime = Date.now();
+      io.emit('bot_state', 'online');
+      io.emit('bot_status', `Bot ${bot.username} is in the server.`);
+      sendDiscord(`🌍 **${bot.username}** spawned and is now **in the server**. Anti-AFK active.`, DISCORD_GREEN, '🟢 Bot In Server');
+      startAntiAfk();
+      startHeartbeat();
+    });
+
+    bot.on('health', () => {
+      if (bot && bot.health <= 0) {
+        console.log('Bot has died, will respawn automatically.');
+      }
+    });
+
+    bot.on('death', () => {
+      console.log('Bot died. Respawning.');
+      io.emit('bot_status', 'Bot died, respawning.');
+      sendDiscord(`💀 **${botUsername}** died and is respawning.`, DISCORD_YELLOW, '💀 Bot Died');
+    });
+
+    bot.on('kicked', (reason) => {
+      let message = reason;
+      try {
+        const parsed = typeof reason === 'string' ? JSON.parse(reason) : reason;
+        message = (parsed && (parsed.text || parsed.translate)) || JSON.stringify(parsed);
+      } catch (_) {}
+      console.log(`Bot kicked: ${message}`);
+      io.emit('bot_state', 'offline');
+      io.emit('bot_status', `Kicked: ${message}`);
+      sendDiscord(`🚫 **${botUsername}** was kicked.\nReason: \`${message}\``, DISCORD_RED, '🚫 Bot Kicked');
+    });
+
+    bot.on('error', (err) => {
+      const msg = err && err.message ? err.message : String(err);
+      console.error('Bot error:', msg);
+      io.emit('bot_status', `Error: ${msg}`);
+      const silent = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'];
+      const isSilent = silent.some((code) => msg.includes(code));
+      if (!isSilent) {
+        sendDiscord(`⚠️ Bot error: \`${msg}\``, DISCORD_YELLOW, '⚠️ Bot Error');
+      }
+      // Safety net: force reconnect if 'end' doesn't fire
+      setTimeout(() => {
+        if (bot && !manualStop) {
+          console.log('Error did not resolve via end event — forcing reconnect.');
+          stopHeartbeat();
+          cleanupBot();
+          io.emit('bot_state', 'offline');
+          io.emit('bot_status', `Connection lost. Reconnecting in ${reconnectInterval / 1000}s...`);
+          scheduleReconnect();
+        }
+      }, 5000);
+    });
+
+    bot.on('end', (reason) => {
+      console.log(`Bot disconnected. Reason: ${reason || 'unknown'}.`);
+      stopHeartbeat();
+      cleanupBot();
+      if (manualStop) {
+        io.emit('bot_state', 'offline');
+        io.emit('bot_status', 'Bot stopped.');
+        sendDiscord(`🛑 **${botUsername}** was stopped manually.`, DISCORD_GREY, '🛑 Bot Stopped');
+        return;
+      }
+      io.emit('bot_state', 'offline');
+      io.emit('bot_status', `Disconnected (${reason || 'unknown'}). Reconnecting in ${reconnectInterval / 1000}s.`);
+      sendDiscord(`🔌 **${botUsername}** disconnected (\`${reason || 'unknown'}\`). Reconnecting in **${reconnectInterval / 1000}s**...`, DISCORD_YELLOW, '🔌 Bot Disconnected');
+      scheduleReconnect();
+    });
+  }); // end mc.ping callback
 }
 
 function startAntiAfk() {
@@ -387,6 +414,18 @@ function clearReconnectTimer() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+}
+
+function startSelfPing() {
+  const appUrl = process.env.RENDER_EXTERNAL_URL || null;
+  if (!appUrl) return; // only runs on Render
+  setInterval(() => {
+    https.get(`${appUrl}/health`, (res) => {
+      console.log(`Self-ping: ${res.statusCode}`);
+    }).on('error', (err) => {
+      console.error('Self-ping failed:', err.message);
+    });
+  }, 10 * 60 * 1000); // every 10 minutes
 }
 
 process.on('SIGINT', () => {
