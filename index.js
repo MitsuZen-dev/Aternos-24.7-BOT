@@ -203,7 +203,12 @@ function createBot() {
     const msg = err && err.message ? err.message : String(err);
     console.error('Bot error:', msg);
     io.emit('bot_status', `Error: ${msg}`);
-    sendDiscord(`⚠️ Bot error: \`${msg}\``, DISCORD_YELLOW, '⚠️ Bot Error');
+    // ECONNRESET = Aternos server went to sleep; suppress Discord spam
+    const silent = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'];
+    const isSilent = silent.some((code) => msg.includes(code));
+    if (!isSilent) {
+      sendDiscord(`⚠️ Bot error: \`${msg}\``, DISCORD_YELLOW, '⚠️ Bot Error');
+    }
   });
 
   bot.on('end', (reason) => {
